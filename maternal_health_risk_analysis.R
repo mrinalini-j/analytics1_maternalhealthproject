@@ -140,7 +140,7 @@ ggplot(maternal_data, aes(x = BS, y = SystolicBP, color = RiskLevel)) +
 
 # 6. Train-test split 
 
-set.seed(5)
+set.seed(6)
 
 train_index <- sample(
   seq_len(nrow(maternal_data)),
