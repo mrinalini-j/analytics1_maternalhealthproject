@@ -96,7 +96,7 @@ print(average_by_risk)
 # 5.1 Bar chart: distribution of RiskLevel.
 ggplot(maternal_data, aes(x = RiskLevel, fill = RiskLevel)) +
   geom_bar() +
-  scale_fill_manual(values = c("low risk" = "yellow", "high risk" = "blue")) +
+  scale_fill_manual(values = c("low risk" = "red", "high risk" = "blue")) +
   labs(
     title = "Distribution of Maternal Health Risk Levels",
     x = "Risk Level",
@@ -116,7 +116,7 @@ maternal_long <- maternal_data %>%
 # Facet boxplot: health measurements across RiskLevel.
 ggplot(maternal_long, aes(x = RiskLevel, y = Value, fill = RiskLevel)) +
   geom_boxplot() +
-  scale_fill_manual(values = c("low risk" = "yellow", "high risk" = "blue")) +
+  scale_fill_manual(values = c("low risk" = "red", "high risk" = "blue")) +
   facet_wrap(~ HealthIndicator, scales = "free_y") +
   labs(
     title = "Health Measurements Across Maternal Risk Levels",
@@ -129,7 +129,7 @@ ggplot(maternal_long, aes(x = RiskLevel, y = Value, fill = RiskLevel)) +
 # This shows whether BS and SystolicBP jointly help identify high-risk cases.
 ggplot(maternal_data, aes(x = BS, y = SystolicBP, color = RiskLevel)) +
   geom_point(alpha = 0.7) +
-  scale_color_manual(values = c("low risk" = "yellow", "high risk" = "blue")) +
+  scale_color_manual(values = c("low risk" = "red", "high risk" = "blue")) +
   labs(
     title = "Blood Sugar vs Systolic Blood Pressure by Risk Level",
     x = "Blood Sugar (BS)",
@@ -191,7 +191,13 @@ print(logistic_high_risk_recall)
 cart_model <- rpart(
   RiskLevel ~ Age + SystolicBP + DiastolicBP + BS + BodyTemp + HeartRate + `Previous Complications` + `Preexisting Diabetes` + `Gestational Diabetes`,
   data = train_data,
-  method = "class"
+  method = "class",
+  control = rpart.control(
+    cp = 0.005,
+    minsplit = 20,
+    minbucket = 10,
+    maxdepth = 4
+  )
 )
 
 # Plot the decision tree.
