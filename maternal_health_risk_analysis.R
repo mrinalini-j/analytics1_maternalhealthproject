@@ -96,6 +96,7 @@ print(average_by_risk)
 # 5.1 Bar chart: distribution of RiskLevel.
 ggplot(maternal_data, aes(x = RiskLevel, fill = RiskLevel)) +
   geom_bar() +
+  scale_fill_manual(values = c("low risk" = "yellow", "high risk" = "blue")) +
   labs(
     title = "Distribution of Maternal Health Risk Levels",
     x = "Risk Level",
@@ -115,6 +116,7 @@ maternal_long <- maternal_data %>%
 # Facet boxplot: health measurements across RiskLevel.
 ggplot(maternal_long, aes(x = RiskLevel, y = Value, fill = RiskLevel)) +
   geom_boxplot() +
+  scale_fill_manual(values = c("low risk" = "yellow", "high risk" = "blue")) +
   facet_wrap(~ HealthIndicator, scales = "free_y") +
   labs(
     title = "Health Measurements Across Maternal Risk Levels",
@@ -127,6 +129,7 @@ ggplot(maternal_long, aes(x = RiskLevel, y = Value, fill = RiskLevel)) +
 # This shows whether BS and SystolicBP jointly help identify high-risk cases.
 ggplot(maternal_data, aes(x = BS, y = SystolicBP, color = RiskLevel)) +
   geom_point(alpha = 0.7) +
+  scale_color_manual(values = c("low risk" = "yellow", "high risk" = "blue")) +
   labs(
     title = "Blood Sugar vs Systolic Blood Pressure by Risk Level",
     x = "Blood Sugar (BS)",
@@ -157,7 +160,7 @@ train_data$RiskLevel <- factor(train_data$RiskLevel,
 test_data$RiskLevel <- factor(test_data$RiskLevel,
                               levels = c("low risk", "high risk"))
 
-logistic_model <- glm(RiskLevel ~ Age + SystolicBP + DiastolicBP + BS + BodyTemp + HeartRate,data = train_data,family = binomial)
+logistic_model <- glm(RiskLevel ~ Age + SystolicBP + DiastolicBP + BS + BodyTemp + HeartRate + `Previous Complications` + `Preexisting Diabetes` + `Gestational Diabetes`,data = train_data,family = binomial)
 
 
 # Predict probability of high risk on the test set.
@@ -186,7 +189,7 @@ print(logistic_high_risk_recall)
 # 8. Technique 2: CART 
 
 cart_model <- rpart(
-  RiskLevel ~ Age + SystolicBP + DiastolicBP + BS + BodyTemp + HeartRate,
+  RiskLevel ~ Age + SystolicBP + DiastolicBP + BS + BodyTemp + HeartRate + `Previous Complications` + `Preexisting Diabetes` + `Gestational Diabetes`,
   data = train_data,
   method = "class"
 )
@@ -241,4 +244,3 @@ print(model_comparison)
 # approach for early pregnancy risk screening. A model with strong high-risk
 # recall is useful in busy or resource-limited clinics because it helps
 # healthcare workers prioritize patients who may need immediate attention.
-
