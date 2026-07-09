@@ -1,0 +1,798 @@
+---
+title: "Maternal Health Risk Prediction for Early Pregnancy Risk Screening"
+subtitle: "CRISP-DM Based Exploratory Data Analysis for SDG 3"
+output:
+  html_notebook: default
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+set.seed(123)
+
+required_packages <- c(
+  "data.table",
+  "dplyr",
+  "tidyr",
+  "ggplot2",
+  "stringr",
+  "forcats",
+  "knitr",
+  "scales"
+)
+
+optional_packages <- c("corrplot")
+
+install_missing <- function(packages) {
+  missing_packages <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TRUE)]
+
+  if (length(missing_packages) > 0) {
+    install.packages(missing_packages, repos = "https://cloud.r-project.org")
+  }
+}
+
+install_missing(required_packages)
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+tryCatch(
+  install_missing(optional_packages),
+  error = function(e) {
+    message("Optional package corrplot could not be installed. A ggplot heatmap will be used instead.")
+  }
+)
+
+has_corrplot <- requireNamespace("corrplot", quietly = TRUE)
+
+theme_set(theme_minimal(base_size = 12))
+
+data_path <- "Dataset - Updated.csv"
+output_dir <- "outputs"
+plot_dir <- file.path(output_dir, "plots")
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+
+risk_palette <- c("Low" = "#2C7FB8", "High" = "#D95F02")
+
+count_missing <- function(data) {
+  data.table(
+    Variable = names(data),
+    Missing = vapply(data, function(x) sum(is.na(x)), integer(1)),
+    Missing_Rate = vapply(data, function(x) mean(is.na(x)), numeric(1))
+  )
+}
+
+get_mode <- function(x) {
+  ux <- na.omit(unique(x))
+
+  if (length(ux) == 0) {
+    return(NA)
+  }
+
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+save_plot <- function(plot_object, filename, width = 8, height = 5) {
+  ggsave(
+    filename = file.path(plot_dir, filename),
+    plot = plot_object,
+    width = width,
+    height = height,
+    dpi = 300
+  )
+}
+
+make_prop_plot <- function(data, factor_col, filename) {
+  plot_data <- data %>%
+    count(.data[[factor_col]], `Risk Level`, name = "Count") %>%
+    group_by(.data[[factor_col]]) %>%
+    mutate(Proportion = Count / sum(Count)) %>%
+    ungroup()
+
+  plot_object <- ggplot(plot_data, aes(x = .data[[factor_col]], y = Proportion, fill = `Risk Level`)) +
+    geom_col(position = "fill", width = 0.7) +
+    scale_y_continuous(labels = percent_format()) +
+    scale_fill_manual(values = risk_palette) +
+    labs(
+      title = paste(factor_col, "by Risk Level"),
+      x = factor_col,
+      y = "Proportion of patients",
+      fill = "Risk Level"
+    )
+
+  save_plot(plot_object, filename)
+  plot_object
+}
+```
+
+# 1. Business Understanding
+
+Hospitals and clinics need to identify pregnant women who are at high risk of pregnancy problems as early as possible. In busy or resource-limited clinics, manual assessment using vital signs can take time, and high-risk patients may not always be prioritized quickly enough.
+
+The goal of this project is not to replace doctors, nurses, or midwives. The goal is to support early screening and prioritization by preparing the data foundation for a future AI-assisted triage system. Such a system could help healthcare workers identify patients who need immediate attention, allocate limited resources more effectively, and reduce delays in treatment.
+
+This project aligns with **SDG 3: Good Health and Well-being** because it focuses on improving maternal health screening and supporting safer care decisions. The business value is faster triage, better use of clinical resources, and more consistent early identification of high-risk pregnancy cases.
+
+# 2. Data Understanding
+
+This section loads the raw CSV file, reviews the structure of the dataset, checks missing values, checks duplicate rows, reviews the target variable, and identifies suspicious data quality issues.
+
+```{r load-data}
+df_raw <- fread(
+  data_path,
+  na.strings = c("", " ", "NA", "N/A", "null", "NULL")
+)
+```
+
+## First Six Rows
+
+```{r first-six-rows}
+knitr::kable(head(df_raw, 6))
+```
+
+## Dataset Dimensions
+
+```{r dimensions}
+dataset_dimensions <- data.table(
+  Rows = nrow(df_raw),
+  Columns = ncol(df_raw)
+)
+
+knitr::kable(dataset_dimensions)
+```
+
+## Column Names
+
+```{r column-names}
+knitr::kable(data.table(Column_Name = names(df_raw)))
+```
+
+## Data Types
+
+```{r data-types}
+data_types <- data.table(
+  Column = names(df_raw),
+  Type = vapply(df_raw, function(x) class(x)[1], character(1))
+)
+
+knitr::kable(data_types)
+```
+
+## Summary Statistics
+
+```{r summary-statistics}
+summary(df_raw)
+```
+
+## Missing Values Before Cleaning
+
+```{r missing-before}
+missing_before <- count_missing(df_raw)
+knitr::kable(missing_before)
+```
+
+The `Risk Level` column contains empty-looking cells that may not always be detected as missing values when the file is first loaded. For this reason, the cleaning workflow trims whitespace and explicitly converts blank strings to `NA`.
+
+```{r blank-string-audit}
+blank_string_audit <- data.table(
+  Variable = names(df_raw),
+  Blank_Strings_After_Trim = vapply(
+    df_raw,
+    function(x) {
+      if (is.character(x)) {
+        sum(trimws(x) == "", na.rm = TRUE)
+      } else {
+        0L
+      }
+    },
+    integer(1)
+  )
+)
+
+knitr::kable(blank_string_audit)
+```
+
+## Duplicate Rows
+
+```{r duplicate-raw}
+duplicate_raw_count <- sum(duplicated(df_raw))
+
+knitr::kable(data.table(Duplicate_Rows_Before_Cleaning = duplicate_raw_count))
+```
+
+## Unique Risk Level Values
+
+Because the target column contains a space, it should be accessed using backticks or double brackets. The code below uses `df_raw[["Risk Level"]]`, and later cleaning steps use the `$` operator with the backticked column name.
+
+```{r unique-risk-level}
+unique_risk_levels_raw <- unique(df_raw[["Risk Level"]])
+
+knitr::kable(data.table(Unique_Risk_Level = unique_risk_levels_raw))
+```
+
+## Target Distribution Before Cleaning
+
+```{r target-distribution-before}
+target_distribution_before_cleaning <- df_raw %>%
+  mutate(`Risk Level` = trimws(as.character(`Risk Level`))) %>%
+  mutate(`Risk Level` = na_if(`Risk Level`, "")) %>%
+  count(`Risk Level`, name = "Count") %>%
+  mutate(Percentage = Count / sum(Count))
+
+knitr::kable(
+  target_distribution_before_cleaning %>%
+    mutate(Percentage = percent(Percentage, accuracy = 0.1))
+)
+```
+
+## Suspicious Data Quality Issues
+
+The dataset can contain an impossible value in `Age`, such as a maximum value of 325. This is not biologically plausible for pregnancy screening. Instead of silently deleting the record, the workflow flags rows where `Age < 10` or `Age > 60`, converts those age values to `NA`, and later imputes age using the median.
+
+```{r age-quality-audit}
+age_quality_audit <- df_raw %>%
+  summarise(
+    Min_Age = min(Age, na.rm = TRUE),
+    Median_Age = median(Age, na.rm = TRUE),
+    Max_Age = max(Age, na.rm = TRUE),
+    Impossible_Age_Count = sum(Age < 10 | Age > 60, na.rm = TRUE)
+  )
+
+knitr::kable(age_quality_audit)
+```
+
+# 3. Data Preparation
+
+The preparation stage cleans character fields, fixes the target variable, removes rows with missing target values, removes duplicate records, converts variables into appropriate types, handles impossible ages, imputes missing predictors, and saves a cleaned modeling-ready dataset.
+
+## A. Clean Character Columns
+
+```{r clean-character-columns}
+df_dt <- copy(df_raw)
+
+character_cols <- names(df_dt)[vapply(df_dt, is.character, logical(1))]
+
+if (length(character_cols) > 0) {
+  df_dt[, (character_cols) := lapply(.SD, function(x) {
+    x <- str_trim(x)
+    x[x == ""] <- NA_character_
+    x
+  }), .SDcols = character_cols]
+}
+```
+
+## B. Clean Target Variable
+
+The target variable must be cleaned carefully because blank-looking values may remain after loading. Rows with missing `Risk Level` are removed because the target variable is required for future supervised classification.
+
+```{r clean-target}
+df_dt$`Risk Level` <- trimws(df_dt$`Risk Level`)
+df_dt$`Risk Level`[df_dt$`Risk Level` == ""] <- NA
+df_dt <- df_dt[!is.na(df_dt$`Risk Level`), ]
+
+df_dt[, `Risk Level` := case_when(
+  str_to_lower(`Risk Level`) %in% c("low", "low risk") ~ "Low",
+  str_to_lower(`Risk Level`) %in% c("high", "high risk") ~ "High",
+  TRUE ~ `Risk Level`
+)]
+
+invalid_risk_count <- sum(!df_dt$`Risk Level` %in% c("Low", "High"), na.rm = TRUE)
+if (invalid_risk_count > 0) {
+  warning(invalid_risk_count, " rows had unexpected Risk Level values and were removed.")
+  df_dt <- df_dt[df_dt$`Risk Level` %in% c("Low", "High"), ]
+}
+```
+
+## C. Remove Duplicate Rows
+
+```{r remove-duplicates}
+duplicate_before <- sum(duplicated(df_dt))
+df_dt <- unique(df_dt)
+duplicate_after <- sum(duplicated(df_dt))
+
+duplicate_summary <- data.table(
+  Duplicate_Rows_Before_Removal = duplicate_before,
+  Duplicate_Rows_After_Removal = duplicate_after
+)
+
+knitr::kable(duplicate_summary)
+```
+
+## D. Convert Variable Types
+
+```{r convert-types}
+numeric_cols <- c("Age", "Systolic BP", "Diastolic", "BS", "Body Temp", "BMI", "Heart Rate")
+binary_cols <- c(
+  "Previous Complications",
+  "Preexisting Diabetes",
+  "Gestational Diabetes",
+  "Mental Health"
+)
+
+for (col in numeric_cols) {
+  df_dt[[col]] <- suppressWarnings(as.numeric(df_dt[[col]]))
+}
+
+df_dt[, Age_Impossible_Flag := !is.na(Age) & (Age < 10 | Age > 60)]
+impossible_age_rows <- df_dt[Age_Impossible_Flag == TRUE]
+df_dt[Age_Impossible_Flag == TRUE, Age := NA_real_]
+
+for (col in binary_cols) {
+  df_dt[[col]] <- as.factor(df_dt[[col]])
+}
+
+df_dt$`Risk Level` <- factor(df_dt$`Risk Level`, levels = c("Low", "High"))
+```
+
+The impossible age flag is kept as an audit field so the data quality correction remains transparent.
+
+```{r impossible-age-rows}
+if (nrow(impossible_age_rows) > 0) {
+  knitr::kable(impossible_age_rows)
+} else {
+  data.table(Message = "No impossible age rows were found.") %>%
+    knitr::kable()
+}
+```
+
+## E. Handle Missing Predictor Values
+
+Numeric predictors are imputed using the median. Binary medical history variables are imputed using the mode. This preserves useful patient records while avoiding target leakage because the target variable itself is never imputed.
+
+```{r impute-values}
+numeric_impute_cols <- numeric_cols
+
+numeric_imputation_values <- data.table(
+  Variable = numeric_impute_cols,
+  Median_Used = vapply(
+    numeric_impute_cols,
+    function(col) {
+      median_value <- median(df_dt[[col]], na.rm = TRUE)
+      if (is.nan(median_value)) {
+        median_value <- 0
+      }
+      median_value
+    },
+    numeric(1)
+  )
+)
+
+for (col in numeric_impute_cols) {
+  median_value <- numeric_imputation_values[Variable == col, Median_Used]
+  df_dt[[col]][is.na(df_dt[[col]])] <- median_value
+}
+
+factor_imputation_values <- data.table(
+  Variable = binary_cols,
+  Mode_Used = vapply(
+    binary_cols,
+    function(col) {
+      mode_value <- get_mode(as.character(df_dt[[col]]))
+      if (is.na(mode_value)) {
+        mode_value <- "Unknown"
+      }
+      mode_value
+    },
+    character(1)
+  )
+)
+
+for (col in binary_cols) {
+  x <- as.character(df_dt[[col]])
+  mode_value <- factor_imputation_values[Variable == col, Mode_Used]
+  x[is.na(x)] <- mode_value
+  df_dt[[col]] <- factor(x)
+}
+
+knitr::kable(numeric_imputation_values)
+knitr::kable(factor_imputation_values)
+```
+
+## F. Missing Values After Cleaning
+
+```{r missing-after}
+df_clean <- copy(df_dt)
+missing_after <- count_missing(df_clean)
+
+knitr::kable(missing_after)
+```
+
+## G. Save Cleaned Dataset
+
+```{r save-cleaned-data}
+fwrite(df_clean, "cleaned_maternal_health_risk.csv")
+```
+
+The cleaned dataset is saved as `cleaned_maternal_health_risk.csv`.
+
+# 4. Exploratory Data Analysis
+
+This section explores relationships between patient characteristics and pregnancy risk. Each plot is saved as a PNG file inside `outputs/plots`.
+
+## A. Missing Values Before vs After Cleaning
+
+```{r missing-values-plot, fig.width=9, fig.height=5.5}
+missing_compare <- full_join(
+  missing_before %>% select(Variable, Missing_Before = Missing),
+  missing_after %>% select(Variable, Missing_After = Missing),
+  by = "Variable"
+) %>%
+  mutate(
+    Missing_Before = replace_na(Missing_Before, 0),
+    Missing_After = replace_na(Missing_After, 0)
+  ) %>%
+  pivot_longer(
+    cols = c(Missing_Before, Missing_After),
+    names_to = "Stage",
+    values_to = "Missing_Count"
+  ) %>%
+  mutate(
+    Stage = recode(Stage, Missing_Before = "Before Cleaning", Missing_After = "After Cleaning")
+  )
+
+plot_missing <- ggplot(missing_compare, aes(x = reorder(Variable, Missing_Count), y = Missing_Count, fill = Stage)) +
+  geom_col(position = "dodge", width = 0.75) +
+  coord_flip() +
+  scale_fill_manual(values = c("Before Cleaning" = "#7A5195", "After Cleaning" = "#FFA600")) +
+  labs(
+    title = "Missing Values Before vs After Cleaning",
+    x = NULL,
+    y = "Missing value count",
+    fill = "Stage"
+  )
+
+save_plot(plot_missing, "missing_values_before_after.png", width = 9, height = 5.5)
+plot_missing
+```
+
+Target rows with missing `Risk Level` were removed because the target is required for future model training. Missing predictor values were imputed to preserve useful patient records and avoid unnecessarily reducing the dataset.
+
+## B. Target Distribution
+
+```{r target-distribution-plot, fig.width=7, fig.height=5}
+target_distribution <- df_clean %>%
+  count(`Risk Level`, name = "Count") %>%
+  mutate(Percentage = Count / sum(Count))
+
+knitr::kable(
+  target_distribution %>%
+    mutate(Percentage = percent(Percentage, accuracy = 0.1))
+)
+
+plot_target <- ggplot(target_distribution, aes(x = `Risk Level`, y = Count, fill = `Risk Level`)) +
+  geom_col(width = 0.65) +
+  geom_text(aes(label = paste0(Count, " (", percent(Percentage, accuracy = 0.1), ")")), vjust = -0.4) +
+  scale_fill_manual(values = risk_palette) +
+  labs(
+    title = "Target Distribution: Risk Level",
+    x = "Risk Level",
+    y = "Number of patients"
+  ) +
+  guides(fill = "none")
+
+save_plot(plot_target, "target_distribution.png")
+plot_target
+```
+
+The target distribution shows whether the dataset is balanced between `Low` and `High` risk patients. If one class is much smaller, future models may learn the majority class more easily and perform poorly on the minority class. For maternal health screening, this matters because missing `High` risk patients is more serious than producing some false alarms.
+
+## C. Age Distribution
+
+```{r age-plots, fig.width=7, fig.height=5}
+plot_age_hist <- ggplot(df_clean, aes(x = Age)) +
+  geom_histogram(binwidth = 5, fill = "#2C7FB8", color = "white", boundary = 0) +
+  labs(
+    title = "Age Distribution After Cleaning",
+    x = "Age",
+    y = "Number of patients"
+  )
+
+save_plot(plot_age_hist, "age_distribution_histogram.png")
+plot_age_hist
+
+plot_age_box <- ggplot(df_clean, aes(x = `Risk Level`, y = Age, fill = `Risk Level`)) +
+  geom_boxplot(alpha = 0.85, outlier.alpha = 0.6) +
+  scale_fill_manual(values = risk_palette) +
+  labs(
+    title = "Age by Risk Level",
+    x = "Risk Level",
+    y = "Age"
+  ) +
+  guides(fill = "none")
+
+save_plot(plot_age_box, "age_by_risk_level_boxplot.png")
+plot_age_box
+```
+
+The age plots help assess whether high-risk patients appear more often in particular age ranges. Age can be clinically relevant because very young or older maternal ages may require closer monitoring.
+
+## D. Blood Pressure Analysis
+
+```{r blood-pressure-plots, fig.width=7, fig.height=5}
+plot_systolic_box <- ggplot(df_clean, aes(x = `Risk Level`, y = `Systolic BP`, fill = `Risk Level`)) +
+  geom_boxplot(alpha = 0.85, outlier.alpha = 0.6) +
+  scale_fill_manual(values = risk_palette) +
+  labs(
+    title = "Systolic Blood Pressure by Risk Level",
+    x = "Risk Level",
+    y = "Systolic BP"
+  ) +
+  guides(fill = "none")
+
+save_plot(plot_systolic_box, "systolic_bp_by_risk_level_boxplot.png")
+plot_systolic_box
+
+plot_diastolic_box <- ggplot(df_clean, aes(x = `Risk Level`, y = Diastolic, fill = `Risk Level`)) +
+  geom_boxplot(alpha = 0.85, outlier.alpha = 0.6) +
+  scale_fill_manual(values = risk_palette) +
+  labs(
+    title = "Diastolic Blood Pressure by Risk Level",
+    x = "Risk Level",
+    y = "Diastolic BP"
+  ) +
+  guides(fill = "none")
+
+save_plot(plot_diastolic_box, "diastolic_bp_by_risk_level_boxplot.png")
+plot_diastolic_box
+```
+
+Blood pressure is clinically important because abnormal blood pressure can indicate pregnancy complications. In a future screening tool, systolic and diastolic blood pressure could help prioritize patients who need faster review.
+
+## E. Blood Sugar Analysis
+
+```{r blood-sugar-plot, fig.width=7, fig.height=5}
+plot_bs_violin <- ggplot(df_clean, aes(x = `Risk Level`, y = BS, fill = `Risk Level`)) +
+  geom_violin(alpha = 0.55, trim = FALSE) +
+  geom_boxplot(width = 0.18, outlier.alpha = 0.5) +
+  scale_fill_manual(values = risk_palette) +
+  labs(
+    title = "Blood Sugar by Risk Level",
+    x = "Risk Level",
+    y = "Blood Sugar"
+  ) +
+  guides(fill = "none")
+
+save_plot(plot_bs_violin, "blood_sugar_by_risk_level_violin.png")
+plot_bs_violin
+```
+
+Blood sugar can be associated with diabetes-related pregnancy risk. If high-risk patients tend to show higher or more variable blood sugar values, this variable may be useful for early prioritization.
+
+## F. BMI Analysis
+
+```{r bmi-plots, fig.width=7, fig.height=5}
+plot_bmi_hist <- ggplot(df_clean, aes(x = BMI)) +
+  geom_histogram(binwidth = 2, fill = "#00A6A6", color = "white", boundary = 0) +
+  labs(
+    title = "BMI Distribution After Cleaning",
+    x = "BMI",
+    y = "Number of patients"
+  )
+
+save_plot(plot_bmi_hist, "bmi_distribution_histogram.png")
+plot_bmi_hist
+
+plot_bmi_box <- ggplot(df_clean, aes(x = `Risk Level`, y = BMI, fill = `Risk Level`)) +
+  geom_boxplot(alpha = 0.85, outlier.alpha = 0.6) +
+  scale_fill_manual(values = risk_palette) +
+  labs(
+    title = "BMI by Risk Level",
+    x = "Risk Level",
+    y = "BMI"
+  ) +
+  guides(fill = "none")
+
+save_plot(plot_bmi_box, "bmi_by_risk_level_boxplot.png")
+plot_bmi_box
+
+df_eda <- df_clean %>%
+  mutate(
+    BMI_Category = case_when(
+      BMI < 18.5 ~ "Underweight",
+      BMI >= 18.5 & BMI < 25 ~ "Normal",
+      BMI >= 25 & BMI < 30 ~ "Overweight",
+      BMI >= 30 ~ "Obese",
+      TRUE ~ NA_character_
+    ),
+    BMI_Category = factor(
+      BMI_Category,
+      levels = c("Underweight", "Normal", "Overweight", "Obese")
+    )
+  )
+
+plot_bmi_category <- ggplot(df_eda, aes(x = BMI_Category, fill = `Risk Level`)) +
+  geom_bar(position = "fill", width = 0.7) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = risk_palette) +
+  labs(
+    title = "BMI Category by Risk Level",
+    x = "BMI Category",
+    y = "Proportion of patients",
+    fill = "Risk Level"
+  )
+
+save_plot(plot_bmi_category, "bmi_category_by_risk_level_stacked_bar.png")
+plot_bmi_category
+```
+
+BMI helps clinics identify patients who may require closer monitoring. The BMI category chart makes the distribution easier to interpret for clinical triage because categories are more familiar than raw BMI values alone.
+
+## G. Body Temperature and Heart Rate
+
+```{r temp-heart-rate-plots, fig.width=7, fig.height=5}
+plot_temp_box <- ggplot(df_clean, aes(x = `Risk Level`, y = `Body Temp`, fill = `Risk Level`)) +
+  geom_boxplot(alpha = 0.85, outlier.alpha = 0.6) +
+  scale_fill_manual(values = risk_palette) +
+  labs(
+    title = "Body Temperature by Risk Level",
+    x = "Risk Level",
+    y = "Body Temperature"
+  ) +
+  guides(fill = "none")
+
+save_plot(plot_temp_box, "body_temp_by_risk_level_boxplot.png")
+plot_temp_box
+
+plot_hr_box <- ggplot(df_clean, aes(x = `Risk Level`, y = `Heart Rate`, fill = `Risk Level`)) +
+  geom_boxplot(alpha = 0.85, outlier.alpha = 0.6) +
+  scale_fill_manual(values = risk_palette) +
+  labs(
+    title = "Heart Rate by Risk Level",
+    x = "Risk Level",
+    y = "Heart Rate"
+  ) +
+  guides(fill = "none")
+
+save_plot(plot_hr_box, "heart_rate_by_risk_level_boxplot.png")
+plot_hr_box
+```
+
+Body temperature and heart rate are useful vital signs, but they should be interpreted alongside other clinical indicators. A single vital sign may not be enough to classify risk, but combinations of vital signs can support early screening.
+
+## H. Medical History and Binary Risk Factors
+
+```{r medical-history-plots, fig.width=7, fig.height=5}
+plot_previous_complications <- make_prop_plot(
+  df_clean,
+  "Previous Complications",
+  "previous_complications_by_risk_level_stacked_bar.png"
+)
+plot_previous_complications
+
+plot_preexisting_diabetes <- make_prop_plot(
+  df_clean,
+  "Preexisting Diabetes",
+  "preexisting_diabetes_by_risk_level_stacked_bar.png"
+)
+plot_preexisting_diabetes
+
+plot_gestational_diabetes <- make_prop_plot(
+  df_clean,
+  "Gestational Diabetes",
+  "gestational_diabetes_by_risk_level_stacked_bar.png"
+)
+plot_gestational_diabetes
+
+plot_mental_health <- make_prop_plot(
+  df_clean,
+  "Mental Health",
+  "mental_health_by_risk_level_stacked_bar.png"
+)
+plot_mental_health
+```
+
+Historical and pre-existing conditions can improve early prioritization. Patients with previous complications or diabetes-related history may need closer monitoring even when current vital signs do not appear extreme.
+
+## I. Correlation Analysis
+
+```{r correlation-analysis, fig.width=7, fig.height=6}
+numeric_data <- df_clean[, ..numeric_cols]
+cor_matrix <- cor(numeric_data, use = "pairwise.complete.obs")
+
+if (has_corrplot) {
+  png(
+    filename = file.path(plot_dir, "correlation_matrix.png"),
+    width = 2400,
+    height = 2000,
+    res = 300
+  )
+  corrplot::corrplot(
+    cor_matrix,
+    method = "color",
+    type = "upper",
+    addCoef.col = "black",
+    tl.col = "black",
+    tl.srt = 45,
+    number.cex = 0.7,
+    col = colorRampPalette(c("#2C7FB8", "white", "#D95F02"))(200)
+  )
+  dev.off()
+
+  knitr::include_graphics(file.path(plot_dir, "correlation_matrix.png"))
+} else {
+  cor_long <- as.data.frame(as.table(cor_matrix))
+  names(cor_long) <- c("Variable_1", "Variable_2", "Correlation")
+
+  plot_correlation <- ggplot(cor_long, aes(x = Variable_1, y = Variable_2, fill = Correlation)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = round(Correlation, 2)), size = 3) +
+    scale_fill_gradient2(low = "#2C7FB8", mid = "white", high = "#D95F02", midpoint = 0) +
+    labs(
+      title = "Correlation Matrix of Numeric Variables",
+      x = NULL,
+      y = NULL,
+      fill = "Correlation"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+  save_plot(plot_correlation, "correlation_matrix.png", width = 7, height = 6)
+  plot_correlation
+}
+```
+
+The correlation matrix shows which numeric vital signs tend to move together. Correlation can highlight useful relationships, such as blood pressure variables moving in the same direction, but correlation does not prove causation. Clinical interpretation is still required.
+
+# 5. Evaluation and Business Interpretation
+
+```{r summary-by-risk}
+numeric_summary_by_risk <- df_clean %>%
+  group_by(`Risk Level`) %>%
+  summarise(
+    across(all_of(numeric_cols), list(mean = mean, median = median), .names = "{.col}_{.fn}"),
+    .groups = "drop"
+  )
+
+knitr::kable(numeric_summary_by_risk)
+```
+
+```{r binary-summary-by-risk}
+binary_summary_by_risk <- df_clean %>%
+  select(all_of(binary_cols), `Risk Level`) %>%
+  pivot_longer(cols = all_of(binary_cols), names_to = "Variable", values_to = "Value") %>%
+  count(Variable, Value, `Risk Level`, name = "Count") %>%
+  group_by(Variable, Value) %>%
+  mutate(Percentage = Count / sum(Count)) %>%
+  ungroup()
+
+knitr::kable(
+  binary_summary_by_risk %>%
+    mutate(Percentage = percent(Percentage, accuracy = 0.1))
+)
+```
+
+Variables that appear most related to high pregnancy risk should be identified by comparing the distributions across `Low` and `High` risk groups. In this EDA, the most important variables to investigate are vital signs such as blood pressure, blood sugar, BMI, body temperature, and heart rate, as well as medical history indicators such as previous complications and diabetes-related variables.
+
+The main data quality problems found were hidden blank values in the target variable, duplicate rows, and impossible age values. The workflow handled these issues transparently by removing missing target rows, removing duplicate records, flagging impossible ages, converting impossible ages to `NA`, and imputing missing predictors.
+
+This analysis can support clinics by preparing a clean dataset for an AI-assisted triage model. Such a system could help healthcare workers prioritize patients, especially in busy clinics where manual assessment may be delayed. However, the system should be used only as decision support, not as a replacement for medical diagnosis.
+
+Important limitations remain. The dataset may not represent all populations, clinical settings, or pregnancy stages. The target labels may reflect historical assessment quality. The analysis is exploratory and does not prove causation. Before model deployment, the dataset should be validated with clinical experts and tested on new patient data.
+
+Before building a model, the next step should be supervised classification with a careful train/test split. High recall for the `High` risk class will likely be important because missing high-risk patients is more dangerous than raising false alarms.
+
+## Modeling Preparation Recommendation
+
+The cleaned dataset is ready for future modeling, but this notebook does not build a full predictive model yet. Recommended next steps are:
+
+* Split the data into training and testing sets.
+* Compare classification models such as logistic regression, random forest, XGBoost, or CatBoost.
+* Evaluate performance using recall, precision, F1-score, confusion matrix, and ROC-AUC.
+* Prioritize recall for the `High` risk class.
+* Use explainability methods such as feature importance or SHAP to support clinical trust.
+
+# 6. Deployment Recommendation
+
+A future deployment should focus on a simple clinical decision support workflow. A clinic-facing tool could show the predicted risk level, the patient factors contributing to the prediction, and whether the patient should be prioritized for review.
+
+Deployment should include:
+
+* Human review by doctors, nurses, or midwives before any clinical action.
+* Clear warnings that the tool supports screening but does not diagnose.
+* Monitoring of model performance across clinics and patient groups.
+* Regular data quality checks for missing values, impossible values, and changing patient patterns.
+* Retraining only after clinical review and validation on new data.
+
+# 7. Conclusion
+
+This CRISP-DM based EDA prepared the maternal health risk dataset for future supervised classification modeling. Missing target rows were removed because `Risk Level` is required as the outcome variable. Missing predictor values were imputed to preserve useful patient records. Impossible age values were handled transparently by flagging them, converting them to `NA`, and imputing them with the median age.
+
+The cleaned dataset is saved as `cleaned_maternal_health_risk.csv`, and all visualizations are saved in `outputs/plots`. The EDA suggests that several vital signs and medical history variables may help identify high-risk pregnancy cases. The next step is supervised classification modeling focused on detecting `High` risk patients with strong recall and clinically understandable explanations.
