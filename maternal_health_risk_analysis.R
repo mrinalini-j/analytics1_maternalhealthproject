@@ -46,6 +46,29 @@ maternal_data[, BS := as.numeric(BS)]
 maternal_data[, BodyTemp := as.numeric(BodyTemp)]
 maternal_data[, HeartRate := as.numeric(HeartRate)]
 
+# Remove duplicated rows.
+
+maternal_data <- unique(maternal_data)
+
+
+# Replace unrealistic age values with NA.
+maternal_data[Age < 10 | Age > 60, Age := NA_real_]
+
+# Replace clearly unrealistic health measurement values with NA.
+maternal_data[SystolicBP <= 0, SystolicBP := NA_real_]
+maternal_data[DiastolicBP <= 0, DiastolicBP := NA_real_]
+maternal_data[BS <= 0, BS := NA_real_]
+maternal_data[BodyTemp <= 0, BodyTemp := NA_real_]
+maternal_data[HeartRate <= 0, HeartRate := NA_real_]
+
+# Impute missing / unrealistic values using mean.
+health_vars <- c("Age", "SystolicBP", "DiastolicBP", "BS", "BodyTemp", "HeartRate")
+
+for (var in health_vars) {
+  mean_value <- mean(maternal_data[[var]], na.rm = TRUE)
+  maternal_data[is.na(get(var)), (var) := mean_value]
+}
+
 # If a health measurement is missing, replace it with the mean value.
 maternal_data[is.na(Age), Age := mean(maternal_data$Age, na.rm = TRUE)]
 maternal_data[is.na(SystolicBP), SystolicBP := mean(maternal_data$SystolicBP, na.rm = TRUE)]
@@ -186,51 +209,182 @@ logistic_high_risk_recall <- logistic_confusion["high risk", "high risk"] / sum(
 print(logistic_high_risk_recall)
 
 
-# 8. Technique 2: CART 
+# 8. Technique 2: CART
 
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+
+# Build an initial CART classification tree.
 cart_model <- rpart(
-  RiskLevel ~ Age + SystolicBP + DiastolicBP + BS + BodyTemp + HeartRate + `Previous Complications` + `Preexisting Diabetes` + `Gestational Diabetes`,
+  RiskLevel ~ Age + SystolicBP + DiastolicBP + BS + BodyTemp + HeartRate +
+    `Previous Complications` + `Preexisting Diabetes` + `Gestational Diabetes`,
   data = train_data,
   method = "class",
   control = rpart.control(
     cp = 0.005,
     minsplit = 20,
-    minbucket = 10,
-    maxdepth = 4
+    minbucket = 10
   )
 )
 
-# Plot the decision tree.
-rpart.plot(
+# Print the pruning sequence and cross-validation errors.
+printcp(cart_model)
+
+# Convert the complexity parameter table into a data frame.
+cart_cp_table <- as.data.frame(cart_model$cptable)
+
+# Tree size = number of terminal nodes = number of splits + 1.
+cart_cp_table$Tree_Size <- cart_cp_table$nsplit + 1
+
+# Find the tree with the lowest cross-validation error.
+best_row <- cart_cp_table[which.min(cart_cp_table$xerror), ]
+
+best_cp <- best_row$CP
+best_tree_size <- best_row$Tree_Size
+best_xerror <- best_row$xerror
+
+print(best_cp)
+print(best_tree_size)
+print(best_xerror)
+
+# Visualize cross-validation error for different tree sizes.
+cart_error_plot <- ggplot(cart_cp_table, aes(x = Tree_Size, y = xerror)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(
+    aes(
+      ymin = xerror - xstd,
+      ymax = xerror + xstd
+    ),
+    width = 0.2
+  ) +
+  geom_point(
+    data = best_row,
+    aes(x = Tree_Size, y = xerror),
+    size = 4
+  ) +
+  geom_text(
+    data = best_row,
+    aes(
+      x = Tree_Size,
+      y = xerror,
+      label = paste0(
+        "Lowest error\n",
+        "Tree size = ", Tree_Size,
+        "\nCP = ", round(CP, 5)
+      )
+    ),
+    vjust = -1
+  ) +
+  labs(
+    title = "Cross-Validation Error for Different CART Tree Sizes",
+    x = "Tree Size: Number of Terminal Nodes",
+    y = "Cross-Validation Relative Error"
+  ) +
+  theme_minimal()
+
+print(cart_error_plot)
+
+# Prune the tree using the cp value with the lowest cross-validation error.
+cart_pruned <- prune(
   cart_model,
-  type = 2,
-  extra = 104,
-  fallen.leaves = TRUE,
-  main = "CART Decision Tree for Maternal Health Risk"
+  cp = best_cp
 )
 
-# Predict RiskLevel on the test set.
-cart_pred <- predict(cart_model, newdata = test_data, type = "class")
-cart_pred <- factor(cart_pred, levels = levels(test_data$RiskLevel), ordered = TRUE)
+# Plot the pruned decision tree.
+rpart.plot(
+  cart_pruned,
+  type = 2,
+  extra = 106,
+  fallen.leaves = TRUE,
+  main = "Pruned CART Decision Tree for Maternal Health Risk"
+)
 
-# Confusion matrix.
-cart_confusion <- table(
-  Predicted = cart_pred,
+# Predict RiskLevel on the training set.
+cart_train_pred <- predict(
+  cart_pruned,
+  newdata = train_data,
+  type = "class"
+)
+
+cart_train_pred <- factor(
+  cart_train_pred,
+  levels = levels(train_data$RiskLevel),
+  ordered = TRUE
+)
+
+# Training set confusion matrix.
+cart_train_confusion <- table(
+  Predicted = cart_train_pred,
+  Actual = train_data$RiskLevel
+)
+
+print(cart_train_confusion)
+
+# Training set accuracy.
+cart_train_accuracy <- sum(diag(cart_train_confusion)) / sum(cart_train_confusion)
+
+# Training set recall for the high risk class.
+cart_train_high_risk_recall <- cart_train_confusion["high risk", "high risk"] /
+  sum(cart_train_confusion[, "high risk"])
+
+print(cart_train_accuracy)
+print(cart_train_high_risk_recall)
+
+# Predict RiskLevel on the test set.
+cart_test_pred <- predict(
+  cart_pruned,
+  newdata = test_data,
+  type = "class"
+)
+
+cart_test_pred <- factor(
+  cart_test_pred,
+  levels = levels(test_data$RiskLevel),
+  ordered = TRUE
+)
+
+# Test set confusion matrix.
+cart_test_confusion <- table(
+  Predicted = cart_test_pred,
   Actual = test_data$RiskLevel
 )
 
-print(cart_confusion)
+print(cart_test_confusion)
 
-# Overall accuracy.
-cart_accuracy <- sum(diag(cart_confusion)) / sum(cart_confusion)
+# Test set accuracy.
+cart_test_accuracy <- sum(diag(cart_test_confusion)) / sum(cart_test_confusion)
 
-# Recall for the "high risk" class.
-cart_high_risk_recall <- cart_confusion["high risk", "high risk"] /
-  sum(cart_confusion[, "high risk"])
+# Test set recall for the high risk class.
+cart_test_high_risk_recall <- cart_test_confusion["high risk", "high risk"] /
+  sum(cart_test_confusion[, "high risk"])
 
-print(cart_accuracy)
-print(cart_high_risk_recall)
+print(cart_test_accuracy)
+print(cart_test_high_risk_recall)
 
+# Variable importance.
+cart_importance <- data.frame(
+  Variable = names(cart_pruned$variable.importance),
+  Importance = as.numeric(cart_pruned$variable.importance)
+)
+
+cart_importance <- cart_importance[order(-cart_importance$Importance), ]
+
+print(cart_importance)
+
+# Visualize variable importance.
+cart_importance_plot <- ggplot(cart_importance, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Variable Importance in Pruned CART Model",
+    x = "Variable",
+    y = "Importance"
+  ) +
+  theme_minimal()
+
+print(cart_importance_plot)
 
 # 9. Model comparison
 
@@ -239,8 +393,8 @@ print(cart_high_risk_recall)
 # missing high-risk patients could delay treatment.
 model_comparison <- data.frame(
   Model = c("Logistic Regression", "CART"),
-  Accuracy = c(logistic_accuracy, cart_accuracy),
-  HighRiskRecall = c(logistic_high_risk_recall, cart_high_risk_recall)
+  Accuracy = c(logistic_accuracy, cart_test_accuracy),
+  HighRiskRecall = c(logistic_high_risk_recall, cart_test_high_risk_recall)
 )
 
 print(model_comparison)
