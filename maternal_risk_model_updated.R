@@ -231,7 +231,21 @@ ggplot(maternal_data, aes(x = BS, y = SystolicBP, color = RiskLevel)) +
   )
 
 
-# 5.4 Missing values before vs after cleaning.
+# 5.4 Scatterplot: blood sugar vs diastolic blood pressure.
+# Complements 5.3 by checking whether BS jointly separates RiskLevel with
+# DiastolicBP as well as it does with SystolicBP.
+ggplot(maternal_data, aes(x = BS, y = DiastolicBP, color = RiskLevel)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = c("low risk" = "red", "high risk" = "blue")) +
+  labs(
+    title = "Blood Sugar vs Diastolic Blood Pressure by Risk Level",
+    x = "Blood Sugar (BS)",
+    y = "Diastolic Blood Pressure",
+    color = "Risk Level"
+  )
+
+
+# 5.5 Missing values before vs after cleaning.
 missing_compare <- merge(
   missing_before[, .(Variable, Missing_Before = Missing)],
   missing_after[, .(Variable, Missing_After = Missing)],
@@ -259,7 +273,7 @@ ggplot(missing_compare_long, aes(x = reorder(Variable, Missing_Count), y = Missi
   )
 
 
-# 5.5 Age distribution.
+# 5.6 Age distribution.
 ggplot(maternal_data, aes(x = Age)) +
   geom_histogram(binwidth = 5, fill = "steelblue", color = "white") +
   labs(
@@ -269,7 +283,7 @@ ggplot(maternal_data, aes(x = Age)) +
   )
 
 
-# 5.6 BMI distribution and BMI category by RiskLevel.
+# 5.7 BMI distribution and BMI category by RiskLevel.
 ggplot(maternal_data, aes(x = BMI)) +
   geom_histogram(binwidth = 2, fill = "darkgreen", color = "white") +
   labs(
@@ -299,7 +313,7 @@ ggplot(maternal_data, aes(x = BMICategory, fill = RiskLevel)) +
   )
 
 
-# 5.7 Categorical predictors by RiskLevel.
+# 5.8 Categorical predictors by RiskLevel.
 for (var in c(cat_vars, "MentalHealth")) {
   plot_data <- maternal_data[, .N, by = c(var, "RiskLevel")]
   setnames(plot_data, var, "Level")
@@ -319,7 +333,7 @@ for (var in c(cat_vars, "MentalHealth")) {
 }
 
 
-# 5.8 Correlation matrix of numeric health variables.
+# 5.9 Correlation matrix of numeric health variables.
 numeric_data <- maternal_data[, ..health_vars]
 cor_matrix <- cor(numeric_data, use = "pairwise.complete.obs")
 
@@ -423,17 +437,6 @@ compute_metrics <- function(confusion) {
 
 
 # 7. Technique 1: Logistic Regression
-# RiskLevel has two categories: high risk and low risk
-#
-# Note on evaluation priorities: accuracy alone can be misleading here.
-# If high risk patients are a minority class, a model could score high
-# accuracy just by predicting "low risk" most of the time. In a screening
-# context, a false negative (predicting low risk for a patient who is
-# actually high risk) is far more costly than a false positive, because it
-# means the patient does not get flagged for timely medical attention.
-# For this reason, high-risk recall is treated as the primary metric
-# throughout this script, with accuracy, precision, specificity, and F1
-# reported alongside it for a fuller picture.
 
 logistic_model <- glm(
   RiskLevel ~ Age + SystolicBP + DiastolicBP + BS + BodyTemp + HeartRate +
@@ -459,7 +462,8 @@ for (var_name in names(logistic_odds_ratios)[-1]) {  # skip the intercept
 # other; high multicollinearity inflates the standard errors of the
 # coefficients and makes individual odds ratios unreliable to interpret,
 # even if the model's overall predictive performance is unaffected.
-# Rule of thumb: VIF > 5 warrants a closer look, VIF > 10 indicates a
+
+# VIF > 5 warrants a closer look, VIF > 10 indicates a
 # problematic level of collinearity.
 logistic_vif <- car::vif(logistic_model)
 print(logistic_vif)
@@ -526,10 +530,7 @@ cart_model <- rpart(
 # Print the pruning sequence and cross-validation errors.
 printcp(cart_model)
 
-# Visualize cross-validation error for different tree sizes.
-# plotcp() already gives the standard view of this (relative error vs cp /
-# tree size with 1-SE error bars), so the earlier custom ggplot version of
-# this same information has been removed as redundant.
+# Visualize cross-validation error for different tree sizes
 plotcp(cart_model)
 
 # Convert the complexity parameter table into a data frame.
@@ -641,4 +642,3 @@ print(model_comparison)
 # generalise to other clinical settings. Before any real-world use, the
 # model would need validation on a larger, independently collected, and
 # locally representative clinical dataset, along with clinical sign-off.
-
