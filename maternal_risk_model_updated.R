@@ -57,7 +57,12 @@ print(maternal_data[, .(
   Min_Age = min(as.numeric(Age), na.rm = TRUE),
   Median_Age = median(as.numeric(Age), na.rm = TRUE),
   Max_Age = max(as.numeric(Age), na.rm = TRUE),
-  Impossible_Age_Count = sum(as.numeric(Age) < 10 | as.numeric(Age) > 60, na.rm = TRUE)
+  # Ages <10 or >100 (e.g. 325) are physiologically impossible on their face.
+  # Ages 61-100 are atypical for a pregnancy dataset but not impossible
+  # without dataset documentation or clinical justification, so they are
+  # counted separately and flagged for review rather than treated as errors.
+  Erroneous_Age_Count = sum(as.numeric(Age) < 10 | as.numeric(Age) > 100, na.rm = TRUE),
+  Flagged_For_Review_Age_Count = sum(as.numeric(Age) >= 61 & as.numeric(Age) <= 100, na.rm = TRUE)
 )])
 
 # If RiskLevel is missing, remove the row because this is the target variable.
@@ -82,6 +87,16 @@ if (invalid_risk_count > 0) {
 }
 
 # Make sure numeric variables are treated as numeric.
+# Units for the numeric health measurements (per available dataset
+# documentation - confirm BS and BodyTemp units with the data owner if this
+# is used beyond this course project):
+#   Age          - years
+#   SystolicBP   - mmHg
+#   DiastolicBP  - mmHg
+#   BS           - blood sugar, likely mmol/L
+#   BodyTemp     - degrees Fahrenheit (F)
+#   HeartRate    - beats per minute (bpm)
+#   BMI          - kg/m^2
 health_vars <- c("Age", "SystolicBP", "DiastolicBP", "BS", "BodyTemp", "HeartRate", "BMI")
 for (var in health_vars) {
   maternal_data[[var]] <- as.numeric(maternal_data[[var]])
@@ -96,8 +111,20 @@ maternal_data <- unique(maternal_data)
 duplicate_count_after <- sum(duplicated(maternal_data))
 print(duplicate_count_after)
 
-# Replace unrealistic age values with NA.
-maternal_data[Age < 10 | Age > 60, Age := NA_real_]
+# Age validity rule:
+
+# An age of 325 is clearly a data-entry error and is treated as such.
+# a pregnancy at 63 or 65 is atypical but not on its face impossible. 
+# So only ages outside a physically implausible range
+# (<10 or >100) are set to NA for imputation, ages in the 61-100 range
+# are flagged for manual review and kept as-is rather than silently overwritten.
+age_review <- sort(maternal_data[Age >= 61 & Age <= 100, Age])
+if (length(age_review) > 0) {
+  cat(length(age_review), "age value(s) between 61 and 100 flagged for review (not overwritten):",
+      paste(age_review, collapse = ", "), "\n")
+}
+
+maternal_data[Age < 10 | Age > 100, Age := NA_real_]
 
 # Replace clearly unrealistic health measurement values with NA.
 maternal_data[SystolicBP <= 0, SystolicBP := NA_real_]
@@ -105,6 +132,17 @@ maternal_data[DiastolicBP <= 0, DiastolicBP := NA_real_]
 maternal_data[BS <= 0, BS := NA_real_]
 maternal_data[BodyTemp <= 0, BodyTemp := NA_real_]
 maternal_data[HeartRate <= 0, HeartRate := NA_real_]
+         
+# BMI validity rule:
+# A BMI of 0 is physiologically impossible. Left uncorrected, it would
+# survive into the BMICategory logic in the EDA section below and be
+# misclassified as "Underweight" (BMI < 18.5), understating true
+# underweight prevalence. BMI <= 0 is therefore treated as missing here
+# and mean-imputed below, consistent with the other health measurements.
+bmi_invalid_count <- sum(maternal_data$BMI <= 0, na.rm = TRUE)
+if (bmi_invalid_count > 0) {
+  cat(bmi_invalid_count, "BMI value(s) <= 0 found and set to NA (will be mean-imputed).\n")
+}
 maternal_data[BMI <= 0, BMI := NA_real_]
 
 # Impute missing / unrealistic values using the column mean.
